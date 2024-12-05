@@ -24,6 +24,8 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 
 /*
  * Several useful constants
@@ -34,6 +36,13 @@
 #define MICROTCP_WIN_SIZE MICROTCP_RECVBUF_LEN
 #define MICROTCP_INIT_CWND (3 * MICROTCP_MSS)
 #define MICROTCP_INIT_SSTHRESH MICROTCP_WIN_SIZE
+
+/* to add more than one flags do "int flags = FLAG1 | FLAG2 | ..." */
+#define ACK (1 << 3)
+#define RST (1 << 2)
+#define SYN (1 << 1)
+#define FIN 1
+#define HEADER_SIZE (sizeof(microtcp_header_t))
 
 /**
  * Possible states of the microTCP socket
