@@ -65,7 +65,7 @@ typedef enum
  * This is the microTCP socket structure. It holds all the necessary
  * information of each microTCP socket.
  *
- * NOTE: Fill free to insert additional fields.
+ * NOTE: Feel free to insert additional fields.
  */
 typedef struct
 {
