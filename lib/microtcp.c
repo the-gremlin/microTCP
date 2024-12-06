@@ -22,6 +22,10 @@
 #include "../utils/crc32.h"
 #include <time.h>
 #include <stdlib.h>
+#include "../utils/log.h"
+#include <stdio.h>
+#include <sys/socket.h>
+
 
 microtcp_sock_t microtcp_socket (int domain, int type, int protocol){
 
@@ -111,6 +115,17 @@ microtcp_make_pkt (microtcp_sock_t *socket, void* data, int data_len, int flags)
   return microtcp_packet;
 }
 
+int microtcp_test_checksum(void* packet) {
+    microtcp_header_t* packet_header = (microtcp_header_t*) packet;
+    int checksum = packet_header->checksum;
+
+    packet_header->checksum = 0; 
+    if (crc32(packet, HEADER_SIZE + packet_header->data_len) != checksum)
+        return 0;
+    else
+        return 1;
+}
+
 int
 microtcp_bind (microtcp_sock_t *socket, const struct sockaddr *address,
                socklen_t address_len)
@@ -129,6 +144,56 @@ microtcp_connect (microtcp_sock_t *socket, const struct sockaddr *address,
   //sends a special segment, no data, flag SYN = 1
   //randomly assigns a seq num
   //encapsulate in a datagram and send!
+    /* make a SYN packet and send it */
+    void* syn_pack = microtcp_make_pkt(socket, NULL, 0, SYN);
+    
+    if (sendto(socket->sd, syn_pack, HEADER_SIZE, 0, 
+                address, address_len) == -1)
+    {
+        LOG_ERROR("Failed to send SYN packet.");
+        return -1;
+    }
+    LOG_INFO("Sent SYN packet, waiting for SYNACK.\n");
+
+    /* wait to receive SYNACK response */
+    microtcp_header_t* synack_pck = malloc(HEADER_SIZE);
+    
+    /* get packet and verify it was both received correctly and 
+     * has the expected contents */
+    if(recvfrom(socket->sd, synack_pck, HEADER_SIZE,
+                0, NULL, 0) == -1) {
+     LOG_ERROR("Failed to receive SYNACK packet.");
+        return -1;
+    } else if (!microtcp_test_checksum(synack_pck)) {
+        LOG_ERROR("Received corrupted packet, aborting.");
+        return -1;
+    } else if ((synack_pck->control ^ (ACK | SYN)) != 0) {
+        LOG_ERROR("Packet didn't only have syn and ack flags, aborting.");
+        return -1;
+    }
+
+    /* increase our sequence number */
+    socket->seq_number += 1;
+
+    /* store the sequence number of the other host as our ACK number and 
+     * add 1 to it */
+    socket->ack_number = synack_pck->seq_number + 1;
+    
+    /* crete final ack packet for handshake */
+    void* final_pck = microtcp_make_pkt(socket, NULL, 0, ACK);
+
+    /* increase out sequence number */
+    socket->seq_number += 1;
+
+    if(sendto(socket->sd, final_pck, HEADER_SIZE, 0, 
+                address, address_len) == -1)
+    {
+        LOG_ERROR("Error sending last ack in handshake.");
+        return -1;
+    }
+
+    /* we have established connection!!!, return success!! */
+    return 0;
 }
 
 int
