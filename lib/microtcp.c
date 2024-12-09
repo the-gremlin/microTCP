@@ -157,6 +157,7 @@ microtcp_connect (microtcp_sock_t *socket, const struct sockaddr *address,
                 address, address_len) == -1)
     {
         LOG_ERROR("Failed to send SYN packet.");
+        socket->state = INVALID;
         return -1;
     }
     LOG_INFO("Sent SYN packet, waiting for SYNACK.\n");
@@ -168,13 +169,16 @@ microtcp_connect (microtcp_sock_t *socket, const struct sockaddr *address,
      * has the expected contents */
     if(recvfrom(socket->sd, synack_pck, HEADER_SIZE,
                 0, NULL, 0) == -1) {
-     LOG_ERROR("Failed to receive SYNACK packet.");
+        LOG_ERROR("Failed to receive SYNACK packet.");
+        socket->state = INVALID;
         return -1;
     } else if (!microtcp_test_checksum(synack_pck)) {
         LOG_ERROR("Received corrupted packet, aborting.");
+        socket->state = INVALID;
         return -1;
     } else if ((synack_pck->control ^ (ACK | SYN)) != 0) {
         LOG_ERROR("Packet didn't only have syn and ack flags, aborting.");
+        socket->state = INVALID;
         return -1;
     }
 
@@ -195,6 +199,7 @@ microtcp_connect (microtcp_sock_t *socket, const struct sockaddr *address,
                 address, address_len) == -1)
     {
         LOG_ERROR("Error sending last ack in handshake.");
+        socket->state = INVALID;
         return -1;
     }
 
@@ -204,6 +209,9 @@ microtcp_connect (microtcp_sock_t *socket, const struct sockaddr *address,
      * host's address and return success */
     socket->remote_host_addr = address;
     socket->remote_host_addr_size = address_len;
+
+    /* also change the socket state accprdingly */
+    socket->state = ESTABLISHED;
 
     return 0;
 }
