@@ -43,33 +43,35 @@ microtcp_sock_t microtcp_socket (int domain, int type, int protocol){
   }
 
   /*INITIALIZE STRUCT FIELDS*/
-  micro_sock.sd = sock;
-  micro_sock.state = CLOSED;
-  micro_sock.init_win_size = MICROTCP_WIN_SIZE;
-  micro_sock.curr_win_size = micro_sock.init_win_size;
+  micro_sock->sd = sock;
+  micro_sock->state = CLOSED;
+  micro_sock->remote_host_addr = NULL;
+  micro_sock->remote_host_addr_size = 0;
+  micro_sock->init_win_size = MICROTCP_WIN_SIZE;
+  micro_sock->curr_win_size = micro_sock->init_win_size;
 
-  micro_sock.recvbuf = (uint8_t *) calloc(MICROTCP_RECVBUF_LEN, MICROTCP_MSS);
-  if (micro_sock.recvbuf == NULL){
+  micro_sock->recvbuf = (uint8_t *) calloc(MICROTCP_RECVBUF_LEN, MICROTCP_MSS);
+  if (micro_sock->recvbuf == NULL){
     exit(EXIT_FAILURE);
   }
 
-  micro_sock.buf_fill_level = 0; /*buffer has no data*/
-  micro_sock.cwnd = MICROTCP_INIT_CWND;
-  micro_sock.ssthresh = MICROTCP_INIT_SSTHRESH;
+  micro_sock->buf_fill_level = 0; /*buffer has no data*/
+  micro_sock->cwnd = MICROTCP_INIT_CWND;
+  micro_sock->ssthresh = MICROTCP_INIT_SSTHRESH;
 
   /*RANDOM SEQUENCE NUMBER*/
   srand(time(NULL));
-  micro_sock.seq_number = rand();
+  micro_sock->seq_number = rand();
 
-  micro_sock.ack_number = 0;
-  micro_sock.packets_send = 0;
-  micro_sock.packets_received = 0;
-  micro_sock.packets_lost = 0;
-  micro_sock.bytes_send = 0;
-  micro_sock.bytes_received = 0;
-  micro_sock.bytes_lost = 0;
+  micro_sock->ack_number = 0;
+  micro_sock->packets_send = 0;
+  micro_sock->packets_received = 0;
+  micro_sock->packets_lost = 0;
+  micro_sock->bytes_send = 0;
+  micro_sock->bytes_received = 0;
+  micro_sock->bytes_lost = 0;
 
-  return &micro_sock;
+  return *micro_sock;
 }
 
 void*
@@ -130,9 +132,13 @@ int
 microtcp_bind (microtcp_sock_t *socket, const struct sockaddr *address,
                socklen_t address_len)
 {
-  /* Your code here */
-  //Bind the socket to server address
-  //we get parameters for the addresses
+    if(bind(socket->sd, address, address_len) == -1){
+        
+        LOG_ERROR("Could not bind socket to port, see `perror` for more infor.");
+        return -1;
+    } else {
+        return 0;
+    }
 }
 
 int
@@ -192,7 +198,13 @@ microtcp_connect (microtcp_sock_t *socket, const struct sockaddr *address,
         return -1;
     }
 
-    /* we have established connection!!!, return success!! */
+
+
+    /* we have established connection!!! save the remote
+     * host's address and return success */
+    socket->remote_host_addr = address;
+    socket->remote_host_addr_size = address_len;
+
     return 0;
 }
 

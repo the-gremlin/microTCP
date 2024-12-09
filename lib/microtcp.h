@@ -69,22 +69,26 @@ typedef enum
  */
 typedef struct
 {
-  int sd;                       /**< The underline UDP socket descriptor */
-  mircotcp_state_t state;       /**< The state of the microTCP socket */
-  size_t init_win_size;         /**< The window size negotiated at the 3-way handshake */
-  size_t curr_win_size;         /**< The current window size */
+  int sd;                               /**< The underline UDP socket descriptor */
+  mircotcp_state_t state;               /**< The state of the microTCP socket */
+  const struct sockaddr* remote_host_addr;    /* The IP address of the host we are connecting to */
+  size_t remote_host_addr_size; 
 
-  uint8_t *recvbuf;             /**< The *receive* buffer of the TCP
-                                     connection. It is allocated during the connection establishment and
-                                     is freed at the shutdown of the connection. This buffer is used
-                                     to retrieve the data from the network. */
-  size_t buf_fill_level;        /**< Amount of data in the buffer */
+
+  size_t init_win_size;                 /**< The window size negotiated at the 3-way handshake */
+  size_t curr_win_size;                 /**< The current window size */
+
+  uint8_t *recvbuf;                     /**< The *receive* buffer of the TCP
+                                             connection. It is allocated during the connection establishment and
+                                             is freed at the shutdown of the connection. This buffer is used
+                                             to retrieve the data from the network. */
+  size_t buf_fill_level;                /**< Amount of data in the buffer */
 
   size_t cwnd;
   size_t ssthresh;
 
-  size_t seq_number;            /**< Keep the state of the sequence number */
-  size_t ack_number;            /**< Keep the state of the ack number */
+  size_t seq_number;                    /**< Keep the state of the sequence number */
+  size_t ack_number;                    /**< Keep the state of the ack number */
   uint64_t packets_send;
   uint64_t packets_received;
   uint64_t packets_lost;
