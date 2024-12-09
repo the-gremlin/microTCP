@@ -25,6 +25,7 @@
 #include "../utils/log.h"
 #include <stdio.h>
 #include <sys/socket.h>
+#include <poll.h>
 
 
 microtcp_sock_t microtcp_socket (int domain, int type, int protocol){
@@ -167,15 +168,16 @@ microtcp_connect (microtcp_sock_t *socket, const struct sockaddr *address,
     
     /* get packet and verify it was both received correctly and 
      * has the expected contents */
+    
+wait_for_synack:
     if(recvfrom(socket->sd, synack_pck, HEADER_SIZE,
                 0, NULL, 0) == -1) {
         LOG_ERROR("Failed to receive SYNACK packet.");
         socket->state = INVALID;
         return -1;
     } else if (!microtcp_test_checksum(synack_pck)) {
-        LOG_ERROR("Received corrupted packet, aborting.");
-        socket->state = INVALID;
-        return -1;
+        LOG_WARN("Received corrupted packet, will continue to wait.");
+        goto wait_for_synack;
     } else if ((synack_pck->control ^ (ACK | SYN)) != 0) {
         LOG_ERROR("Packet didn't only have syn and ack flags, aborting.");
         socket->state = INVALID;
@@ -202,8 +204,6 @@ microtcp_connect (microtcp_sock_t *socket, const struct sockaddr *address,
         socket->state = INVALID;
         return -1;
     }
-
-
 
     /* we have established connection!!! save the remote
      * host's address and return success */
@@ -241,5 +241,41 @@ microtcp_send (microtcp_sock_t *socket, const void *buffer, size_t length,
 ssize_t
 microtcp_recv (microtcp_sock_t *socket, void *buffer, size_t length, int flags)
 {
-  /* Your code here */
+
+
+    /* polling code taken from Beej's Guide to Network Programming */
+    struct pollfd events[1];
+    void* data_in = malloc(sizeof(char) * MICROTCP_MSS);
+    int data_len;
+
+    /* we're want our socket to have some input we can read */
+    events[0].fd = socket->sd;
+    events[0].events = POLLIN;
+
+
+    LOG_INFO("Waiting for incoming messages with poll();");
+
+wait_for_packet:
+    poll(events, 1, -1); // -1 means it will wait until an event happens;
+    
+    LOG_INFO("Received a message, reading packet now!");
+    
+    /* get the data */
+    if(recvfrom(socket->sd, data_in, data_len,
+                0, NULL, 0) == -1) 
+    {
+        LOG_ERROR("Reading incoming data from socket failed, aborting.");
+        socket->state = INVALID;
+        return -1;
+    } else if (!microtcp_test_checksum(data_in)) {
+        /* test checksum */
+        LOG_WARN("Packet checksum failed, continuing to wait for valid packets");
+        goto wait_for_packet;
+    }
+
+    LOG_INFO("received packet lmao");
+    /* we have received the packet!!! next we do stuff with it but i shall
+     * deal with that later ... 
+     * TODO: actually implement the shutdown thingy :3 */
+
 }
