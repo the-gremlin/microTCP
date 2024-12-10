@@ -142,6 +142,24 @@ microtcp_bind (microtcp_sock_t *socket, const struct sockaddr *address,
     }
 }
 
+void microtcp_close_socket(microtcp_sock_t* socket) {
+    free(socket->recvbuf);
+    free(socket->remote_host_addr);
+    socket->remote_host_addr_size = 0;
+    socket->bytes_lost = 0;
+    socket->bytes_received = 0;
+    socket->bytes_send = 0;
+    socket->curr_win_size = socket->init_win_size;
+    socket->packets_send = 0;
+    socket->packets_lost = 0;
+    socket->packets_received = 0;
+    socket->buf_fill_level = 0;
+    socket->seq_number = rand();
+    socket->ack_number = 0;
+    socket->cwnd = 0;
+    socket->ssthresh = 0;
+}
+
 int
 microtcp_connect (microtcp_sock_t *socket, const struct sockaddr *address,
                   socklen_t address_len)
@@ -246,9 +264,8 @@ microtcp_recv (microtcp_sock_t *socket, void *buffer, size_t length, int flags)
     /* polling code taken from Beej's Guide to Network Programming */
     struct pollfd events[1];
     void* data_in = malloc(sizeof(char) * MICROTCP_MSS);
-    int data_len;
+    int data_len = sizeof(char) * MICROTCP_MSS;
 
-    /* we're want our socket to have some input we can read */
     events[0].fd = socket->sd;
     events[0].events = POLLIN;
 
@@ -278,4 +295,59 @@ wait_for_packet:
      * deal with that later ... 
      * TODO: actually implement the shutdown thingy :3 */
 
+    /* get the packet's header */
+    microtcp_header_t* header = (microtcp_header_t*) data_in; 
+    
+    /* check if FIN flag is set, if not, ignore the packet */
+    if((header->control & FIN) != 0) {
+       LOG_INFO("Packet doesn't have FIN flag, ignoring for now...");
+       goto wait_for_packet;
+    }
+    
+    /* otherwise send the ack */
+    socket->ack_number += 1;
+
+    void* ack = microtcp_make_pkt(socket, NULL, 0, ACK);
+
+    while (sendto(socket->sd, ack, HEADER_SIZE, 0, socket->remote_host_addr, 
+                socket->remote_host_addr_size) == -1)
+    {
+        LOG_ERROR("Failed to send ack, retrying");
+    }
+    free(ack);
+
+    /* set the socket state accordingly */
+    socket->state = CLOSING_BY_PEER;
+    
+    /* send FIN packet */
+    void* fin = microtcp_make_pkt(socket, NULL, 0, FIN | ACK); 
+
+    while(sendto(socket->sd, fin, HEADER_SIZE, 0, socket->remote_host_addr, 
+                socket->remote_host_addr_size) == -1)
+    {
+        LOG_WARN("Failed to send fin, retrying...");
+    }
+    free(fin);
+    
+    /* wait for ack */
+
+wait_for_fin_ack:
+    while(recvfrom(socket->sd, data_in, data_len,
+                0, NULL, 0) == -1) 
+    {
+        LOG_WARN("Failed to receive ack, continuing to wait.");
+    }
+    
+    /* get the header from the data */
+    header = (microtcp_header_t*)data_in;
+    
+    if((header->control & (FIN|ACK)) == 0) {
+        LOG_WARN("Received packet wasn't ack, continuing to wait...");
+        goto wait_for_fin_ack;
+    }
+
+    /* we got the ack! close the connection and deallocate all memory */
+    microtcp_close_socket(socket);
+    return 0;
 }
+
