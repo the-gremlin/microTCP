@@ -60,6 +60,11 @@ typedef enum
   INVALID
 } mircotcp_state_t;
 
+typedef enum {
+  CLIENT,
+  SERVER
+} microtcp_connection_role;
+
 
 /**
  * This is the microTCP socket structure. It holds all the necessary
@@ -73,6 +78,10 @@ typedef struct
   mircotcp_state_t state;               /**< The state of the microTCP socket */
   const struct sockaddr* peer_addr;    /* The IP address of the host we are connecting to */
   size_t peer_addr_len; 
+
+  bool can_read;
+  bool can write;
+  microtcp_connection_role conn_role;
 
 
   size_t init_win_size;                 /**< The window size negotiated at the 3-way handshake */
@@ -115,6 +124,10 @@ typedef struct
   uint32_t checksum;            /**< CRC-32 checksum, see crc32() in utils folder */
 } microtcp_header_t;
 
+typedef struct {
+  microtcp_header_t header;
+  char data[MICROTCP_MSS];
+} microtcp_packet_t;
 
 microtcp_sock_t
 microtcp_socket (int domain, int type, int protocol);

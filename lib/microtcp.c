@@ -19,6 +19,7 @@
  */
 
 #include "microtcp.h"
+#include <stdbool.h>
 #include "../utils/crc32.h"
 #include <time.h>
 #include <stdlib.h>
@@ -26,7 +27,6 @@
 #include <stdio.h>
 #include <sys/socket.h>
 #include <poll.h>
-
 
 microtcp_sock_t microtcp_socket (int domain, int type, int protocol){
 
@@ -50,6 +50,8 @@ microtcp_sock_t microtcp_socket (int domain, int type, int protocol){
   micro_sock->remote_host_addr_size = 0;
   micro_sock->init_win_size = MICROTCP_WIN_SIZE;
   micro_sock->curr_win_size = micro_sock->init_win_size;
+  micro_sock->can_read = true;
+  micro_sock->can_write = tru
 
   micro_sock->recvbuf = (uint8_t *) calloc(MICROTCP_RECVBUF_LEN, MICROTCP_MSS);
   if (micro_sock->recvbuf == NULL){
@@ -75,55 +77,42 @@ microtcp_sock_t microtcp_socket (int domain, int type, int protocol){
   return *micro_sock;
 }
 
-void*
+microtcp_packet_t*
 microtcp_make_pkt (microtcp_sock_t *socket, void* data, int data_len, int flags) {
+  int i;
+  microtcp_packet_t* packet;
 
-  void* microtcp_packet;
-  int checksum;
+  /*ALLOCATE MEMORY*/
+  packet = (microtcp_packet_t*) malloc(sizeof(microtcp_packet_t));
 
-  /* use calloc to initialize the header because it zeroes out the memory */
-  microtcp_header_t* header = calloc(HEADER_SIZE, 1);
+  if (data_len > 0){
+    packet->data = malloc(data_len * sizeof(char));
+  }
   
-  /* assign the relevant values to the header */
-  header->ack_number = socket->ack_number;
-  header->seq_number = socket->seq_number;
-  header->data_len = data_len;
-  header->control = flags;
-  header->window = socket->buf_fill_level;
-  
-  /* 
-    * NOTE THAT THE FOLLOWING CODE SHOULD WORK REGARDLESS OF THE SIZE OF THE DATA
-    * IF THE DATA LENGTH IS ZERO THEN THE FUNCTIONS SHOULD NOT ACCESS IT 
-    */
+  /*SET HEADER VARIABLES*/
+  packet->header.ack_number = socket->ack_number;
+  packet->header.seq_number = socket->seq_number;
+  packet->header.data_len = data_len;
+  packet->header.control = flags;
+  packet->header.window = socket->buf_fill_level;
+  packet->header.future_use0 = 0;
+  packet->header.future_use1 = 0;
+  packet->header.future_use2 = 0;
 
-  /* allocate space for both the data and the header*/
-  microtcp_packet = malloc(HEADER_SIZE + sizeof(char) * data_len);
+  for (i = 0; i < data_len; i++){
+    packet->data[i] = data[i];
+  }
   
-  /* copy the header to the start of the packet and the data after the 
-    * header */
-  memcpy(microtcp_packet, header, HEADER_SIZE);
-  memcpy(microtcp_packet + HEADER_SIZE, data, data_len);
-  
-  /* calculate the checksum */
-  checksum = crc32(microtcp_packet, HEADER_SIZE + data_len); 
+  header.checksum = crc32(packet, HEADER_SIZE + data_len);
 
-  /*
-    * put the checksum in the header and put the header in the packet again
-    */
-  header->checksum = checksum;
-  memcpy(microtcp_packet, header, HEADER_SIZE);
-
-  free(header);
-  
-  return microtcp_packet;
+  return packet;
 }
 
-int microtcp_test_checksum(void* packet) {
-    microtcp_header_t* packet_header = (microtcp_header_t*) packet;
-    int checksum = packet_header->checksum;
+int microtcp_test_checksum(microtcp_packet_t* packet) {
+    int checksum = packet->header.checksum;
 
-    packet_header->checksum = 0; 
-    if (crc32(packet, HEADER_SIZE + packet_header->data_len) != checksum)
+    packet->header.checksum = 0; 
+    if (crc32(packet, HEADER_SIZE + packet->header.data_len) != checksum)
         return 0;
     else
         return 1;
@@ -165,7 +154,9 @@ microtcp_connect (microtcp_sock_t *socket, const struct sockaddr *address,
                   socklen_t address_len)
 {
   /* make a SYN packet and send it */
-  void* syn_pack = microtcp_make_pkt(socket, NULL, 0, SYN);
+  microtcp_packet_t* syn_pack = microtcp_make_pkt(socket, NULL, 0, SYN);
+
+  socket->conn_role = CLIENT;
   
   if (sendto(socket->sd, syn_pack, HEADER_SIZE, 0, 
               address, address_len) == -1)
@@ -205,7 +196,7 @@ microtcp_connect (microtcp_sock_t *socket, const struct sockaddr *address,
   socket->ack_number = synack_pck->seq_number + 1;
   
   /* crete final ack packet for handshake */
-  void* final_pck = microtcp_make_pkt(socket, NULL, 0, ACK);
+  microtcp_packet_t* final_pck = microtcp_make_pkt(socket, NULL, 0, ACK);
 
   /* increase our sequence number */
   socket->seq_number += 1;
@@ -220,8 +211,8 @@ microtcp_connect (microtcp_sock_t *socket, const struct sockaddr *address,
 
   /* we have established connection!!! save the remote
     * host's address and return success */
-  socket->remote_host_addr = address;
-  socket->remote_host_addr_size = address_len;
+  socket->peer_addr = address;
+  socket->peer_addr_ = address_len;
 
   /* also change the socket state accprdingly */
   socket->state = ESTABLISHED;
@@ -234,7 +225,9 @@ microtcp_accept (microtcp_sock_t *socket, struct sockaddr *address,
                  socklen_t address_len)
 {
   int sent;
-  void* synack_pack = microtcp_make_pkt(socket, NULL, 0, (SYN|ACK));
+  microtcp_packet_t* synack_pack = microtcp_make_pkt(socket, NULL, 0, (SYN|ACK));
+
+  socket->conn_role = SERVER;
 
   /*SEND SYNACK*/
   sent = sendto(socket->sd, synack_pack, HEADER_SIZE, 0, address, address_len);
@@ -278,22 +271,24 @@ int
 microtcp_shutdown (microtcp_sock_t *socket, int how)
 {
   int sent;
-  void* fin_pack;
+  microtcp_packet_t* fin_pack;
+
+  if (socket->conn_role == SERVER) {
+    LOG_ERROR("The server cannot shut down the connection.");
+    return -1;
+  }
   
   switch (how){
     
     case 0: /*SHUT_RD: DISABLE RECEPTION*/
-      
-      /*FREE BUFFER MEMORY OR SHRINK IT DOWN TO THE EXISTING DATA*/
-      if(socket->buf_fill_level == 0){
-        free(socket->recvbuf);
-      }else{
-        socket->recvbuf = realloc(socket->recvbuf, socket->buf_fill_level * MICROTCP_MSS);
-      }
-      break;
+
+      /* disable reads */
+      socket->can_read = false;
 
     case 1: /*SHUT_WR: DISABLE TRANSMISSION*/
 
+      /* disable writes */
+      socket->can_write = false;
       /*SEND A FIN PACKET*/
       fin_pack = microtcp_make_pkt(socket, NULL, 0, FIN);
       sent = sendto(socket->sd, fin_pack, HEADER_SIZE, 0, 
@@ -310,12 +305,9 @@ microtcp_shutdown (microtcp_sock_t *socket, int how)
 
     case 2: /*SHUT_RDWR: DISABLE RECEPTION AND TRANSMISSION*/
 
-      /*FREE BUFFER MEMORY OR SHRINK IT DOWN TO THE EXISTING DATA*/
-      if(socket->buf_fill_level == 0){
-        free(socket->recvbuf);
-      }else{
-        socket->recvbuf = realloc(socket->recvbuf, socket->buf_fill_level * MICROTCP_MSS);
-      }
+      /* disable reads and writes */
+      socket->can_read = false;
+      socket->can_write = false;
 
       /*SEND A FIN PACKET*/
       fin_pack = microtcp_make_pkt(socket, NULL, 0, FIN);
@@ -346,12 +338,19 @@ microtcp_send (microtcp_sock_t *socket, const void *buffer, size_t length,
   /* Your code here */
 }
 
+
+
 ssize_t
 microtcp_recv (microtcp_sock_t *socket, void *buffer, size_t length, int flags)
 {
+    if (socket->can_read == false) {
+      LOG_ERROR("Connection is closed, cannot read");
+      return -1;
+    }
+
     /* polling code taken from Beej's Guide to Network Programming */
     struct pollfd events[1];
-    void* data_in = malloc(sizeof(char) * MICROTCP_MSS);
+    microtcp_packet_t* data_in = malloc(sizeof(char) * MICROTCP_MSS);
     int data_len = sizeof(char) * MICROTCP_MSS;
 
     events[0].fd = socket->sd;
@@ -378,13 +377,10 @@ wait_for_packet:
         goto wait_for_packet;
     }
 
-    LOG_INFO("received packet lmao");
-    /* we have received the packet!!! next we do stuff with it but i shall
-     * deal with that later ... 
-     * TODO: actually implement the shutdown thingy :3 */
+    LOG_INFO("received packet");
 
     /* get the packet's header */
-    microtcp_header_t* header = (microtcp_header_t*) data_in; 
+    microtcp_header_t* header = data_in->header; 
     
     /* check if FIN flag is set, if not, ignore the packet */
     if((header->control & FIN) != 0) {
@@ -395,7 +391,7 @@ wait_for_packet:
     /* otherwise send the ack */
     socket->ack_number += 1;
 
-    void* ack = microtcp_make_pkt(socket, NULL, 0, ACK);
+    microtcp_packet_t* ack = microtcp_make_pkt(socket, NULL, 0, ACK); //why would you declare a ptr after a goto address?
 
     while (sendto(socket->sd, ack, HEADER_SIZE, 0, socket->remote_host_addr, 
                 socket->remote_host_addr_size) == -1)
@@ -408,7 +404,7 @@ wait_for_packet:
     socket->state = CLOSING_BY_PEER;
     
     /* send FIN packet */
-    void* fin = microtcp_make_pkt(socket, NULL, 0, FIN | ACK); 
+    microtcp_packet_t* fin = microtcp_make_pkt(socket, NULL, 0, FIN | ACK); 
 
     while(sendto(socket->sd, fin, HEADER_SIZE, 0, socket->remote_host_addr, 
                 socket->remote_host_addr_size) == -1)
@@ -424,6 +420,7 @@ wait_for_fin_ack:
                 0, NULL, 0) == -1) 
     {
         LOG_WARN("Failed to receive ack, continuing to wait.");
+        //is this ever going to end?
     }
     
     /* get the header from the data */
