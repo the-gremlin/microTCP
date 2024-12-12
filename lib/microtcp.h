@@ -71,8 +71,8 @@ typedef struct
 {
   int sd;                               /**< The underline UDP socket descriptor */
   mircotcp_state_t state;               /**< The state of the microTCP socket */
-  const struct sockaddr* remote_host_addr;    /* The IP address of the host we are connecting to */
-  size_t remote_host_addr_size; 
+  const struct sockaddr* peer_addr;    /* The IP address of the host we are connecting to */
+  size_t peer_addr_len; 
 
 
   size_t init_win_size;                 /**< The window size negotiated at the 3-way handshake */

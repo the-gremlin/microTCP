@@ -33,7 +33,7 @@ microtcp_sock_t microtcp_socket (int domain, int type, int protocol){
   /*OPEN A SOCKET*/
   int sock;
   if((sock = socket(domain, type, protocol)) == -1){
-    perror("SOCKET COULD NOT BE OPENED");
+    LOG_ERROR("SOCKET COULD NOT BE OPENED");
     exit(EXIT_FAILURE);
   }
 
@@ -277,82 +277,66 @@ microtcp_accept (microtcp_sock_t *socket, struct sockaddr *address,
 int
 microtcp_shutdown (microtcp_sock_t *socket, int how)
 {
+  int sent;
+  void* fin_pack;
+  
   switch (how){
-  case 0:
-    /*SHUT_RD: stops receiving*/
-    break;
-  case 1:
-    /*SHUT_WR: stops transmitting*/
-    break;
-  case 2:
-    /*SHUT_RDWR: stops receiving and transmitting*/
-    break;
-  default:
-    /*INVALID HOW VALUE*/
-    break;
-  }
-  // int sent;
-  // void* fin_pack = microtcp_make_pkt(socket, NULL, 0, SYN);
-  
-  // /*SEND A FIN PACKET*/
-  // sent = sendto(socket->sd, fin_pack, HEADER_SIZE, 0, address, address_len);
-  // if(sent == -1){
-  //   LOG_ERROR("Failed to send FIN packet");
-  //   return -1;
-  // }
-  // LOG_INFO("Sent SYN packet, waiting for SYNACK.");
-
-  // /* increase our sequence number */
-  // socket->seq_number += 1;
-
-  // /* wait to receive SYNACK response */
-  // microtcp_header_t* synack_pck = malloc(HEADER_SIZE);
-  
-  // /* get packet and verify it was both received correctly and 
-  //   * has the expected contents */
     
-  // if(recvfrom(socket->sd, synack_pck, HEADER_SIZE,
-  //             0, NULL, 0) == -1) {
-  //   LOG_ERROR("Failed to receive SYNACK packet.");
-  //   socket->state = INVALID;
-  //   return -1;
-  // } else if (!microtcp_test_checksum(synack_pck)) {
-  //   LOG_ERROR("Received corrupted packet, will continue to wait.");
-  //   socket->state = INVALID;
-  //   return -1;
-  // } else if ((synack_pck->control ^ (ACK | SYN)) != 0) {
-  //   LOG_ERROR("Packet didn't only have syn and ack flags, aborting.");
-  //   socket->state = INVALID;
-  //   return -1;
-  // }
+    case 0: /*SHUT_RD: DISABLE RECEPTION*/
+      
+      /*FREE BUFFER MEMORY OR SHRINK IT DOWN TO THE EXISTING DATA*/
+      if(socket->buf_fill_level == 0){
+        free(socket->recvbuf);
+      }else{
+        socket->recvbuf = realloc(socket->recvbuf, socket->buf_fill_level * MICROTCP_MSS);
+      }
+      break;
 
-  // /* store the sequence number of the other host as our ACK number and 
-  //   * add 1 to it */
-  // socket->ack_number = synack_pck->seq_number + 1;
-  
-  // /* crete final ack packet for handshake */
-  // void* final_pck = microtcp_make_pkt(socket, NULL, 0, ACK);
+    case 1: /*SHUT_WR: DISABLE TRANSMISSION*/
 
-  // /* increase our sequence number */
-  // socket->seq_number += 1;
+      /*SEND A FIN PACKET*/
+      fin_pack = microtcp_make_pkt(socket, NULL, 0, FIN);
+      sent = sendto(socket->sd, fin_pack, HEADER_SIZE, 0, 
+                  socket->peer_addr, socket->peer_addr_len);
 
-  // if(sendto(socket->sd, final_pck, HEADER_SIZE, 0, 
-  //             address, address_len) == -1)
-  // {
-  //     LOG_ERROR("Error sending last ack in handshake.");
-  //     socket->state = INVALID;
-  //     return -1;
-  // }
+      if(sent == -1){
+        LOG_ERROR("Failed to send FIN packet");
+        return -1;
+      }
 
-  // /* we have established connection!!! save the remote
-  //   * host's address and return success */
-  // socket->remote_host_addr = address;
-  // socket->remote_host_addr_size = address_len;
+      LOG_INFO("Successful transmission of FIN packet");
 
-  // /* also change the socket state accprdingly */
-  // socket->state = ESTABLISHED;
+      break;
 
-  // return 0;       
+    case 2: /*SHUT_RDWR: DISABLE RECEPTION AND TRANSMISSION*/
+
+      /*FREE BUFFER MEMORY OR SHRINK IT DOWN TO THE EXISTING DATA*/
+      if(socket->buf_fill_level == 0){
+        free(socket->recvbuf);
+      }else{
+        socket->recvbuf = realloc(socket->recvbuf, socket->buf_fill_level * MICROTCP_MSS);
+      }
+
+      /*SEND A FIN PACKET*/
+      fin_pack = microtcp_make_pkt(socket, NULL, 0, FIN);
+      sent = sendto(socket->sd, fin_pack, HEADER_SIZE, 0, 
+                  socket->peer_addr, socket->peer_addr_len);
+
+      if(sent == -1){
+        LOG_ERROR("Failed to send FIN packet");
+        return -1;
+      }
+      
+      LOG_INFO("Successful transmission of FIN packet");
+      
+      break;
+
+    default: /*INVALID HOW VALUE*/
+      LOG_ERROR("Invalid value specified in how");
+      return -1;
+  }
+
+  return 0;       
 }
 
 ssize_t
