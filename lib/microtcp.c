@@ -53,9 +53,14 @@ microtcp_sock_t microtcp_socket (int domain, int type, int protocol){
 
   micro_sock->recvbuf = (uint8_t *) calloc(MICROTCP_RECVBUF_LEN, MICROTCP_MSS);
   if (micro_sock->recvbuf == NULL){
+  micro_sock->recvbuf = (uint8_t *) calloc(MICROTCP_RECVBUF_LEN, MICROTCP_MSS);
+  if (micro_sock->recvbuf == NULL){
     exit(EXIT_FAILURE);
   }
 
+  micro_sock->buf_fill_level = 0; /*buffer has no data*/
+  micro_sock->cwnd = MICROTCP_INIT_CWND;
+  micro_sock->ssthresh = MICROTCP_INIT_SSTHRESH;
   micro_sock->buf_fill_level = 0; /*buffer has no data*/
   micro_sock->cwnd = MICROTCP_INIT_CWND;
   micro_sock->ssthresh = MICROTCP_INIT_SSTHRESH;
@@ -63,7 +68,15 @@ microtcp_sock_t microtcp_socket (int domain, int type, int protocol){
   /*RANDOM SEQUENCE NUMBER*/
   srand(time(NULL));
   micro_sock->seq_number = rand();
+  micro_sock->seq_number = rand();
 
+  micro_sock->ack_number = 0;
+  micro_sock->packets_send = 0;
+  micro_sock->packets_received = 0;
+  micro_sock->packets_lost = 0;
+  micro_sock->bytes_send = 0;
+  micro_sock->bytes_received = 0;
+  micro_sock->bytes_lost = 0;
   micro_sock->ack_number = 0;
   micro_sock->packets_send = 0;
   micro_sock->packets_received = 0;
@@ -164,11 +177,6 @@ int
 microtcp_connect (microtcp_sock_t *socket, const struct sockaddr *address,
                   socklen_t address_len)
 {
-  //first step of 3-way handshake
-  //client initiates a connection:
-  //sends a special segment, no data, flag SYN = 1
-  //randomly assigns a seq num
-  //encapsulate in a datagram and send!
     /* make a SYN packet and send it */
     void* syn_pack = microtcp_make_pkt(socket, NULL, 0, SYN);
     
@@ -241,6 +249,55 @@ microtcp_accept (microtcp_sock_t *socket, struct sockaddr *address,
   /* Your code here */
   //second step of 3-way handshake
   //server responds to SYN segment
+
+  /*ACKNOWLEDGE SYN PACKET*/
+  void* syn_pack = microtcp_make_pkt(socket, NULL, 0, (SYN|ACK));
+  
+  if (sendto(socket->sd, syn_pack, HEADER_SIZE, 0, address, address_len) == -1){
+    LOG_ERROR("Failed to send SYNACK packet");
+    return -1;
+  }
+  LOG_INFO("Sent SYNACK packet, waiting for ACK");
+
+  //GO OVER THESE!!!!!
+  // /* wait to receive SYNACK response */
+  // microtcp_header_t* synack_pck = malloc(HEADER_SIZE);
+  
+  /* get packet and verify it was both received correctly and 
+    * has the expected contents */
+  // if(recvfrom(socket->sd, synack_pck, HEADER_SIZE,
+  //             0, NULL, 0) == -1) {
+  //   LOG_ERROR("Failed to receive SYNACK packet.");
+  //     return -1;
+  // } else if (!microtcp_test_checksum(synack_pck)) {
+  //     LOG_ERROR("Received corrupted packet, aborting.");
+  //     return -1;
+  // } else if ((synack_pck->control ^ (ACK | SYN)) != 0) {
+  //     LOG_ERROR("Packet didn't only have syn and ack flags, aborting.");
+  //     return -1;
+  // }
+
+  /* increase our sequence number */
+  socket->seq_number += 1;
+
+  /* store the sequence number of the other host as our ACK number and 
+    * add 1 to it */
+  socket->ack_number = synack_pck->seq_number + 1;
+  
+  /* crete final ack packet for handshake */
+  void* final_pck = microtcp_make_pkt(socket, NULL, 0, ACK);
+
+  /* increase out sequence number */
+  socket->seq_number += 1;
+
+  if(sendto(socket->sd, final_pck, HEADER_SIZE, 0, 
+              address, address_len) == -1)
+  {
+    LOG_ERROR("Error sending last ack in handshake.");
+    return -1;
+  }
+
+  return 0;
 }
 
 int

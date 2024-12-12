@@ -63,7 +63,7 @@ typedef enum
 
 /**
  * This is the microTCP socket structure. It holds all the necessary
- * inforqmation of each microTCP socket.
+ * information of each microTCP socket.
  *
  * NOTE: Feel free to insert additional fields.
  */
