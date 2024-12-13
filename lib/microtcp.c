@@ -46,12 +46,12 @@ microtcp_sock_t microtcp_socket (int domain, int type, int protocol){
   /*INITIALIZE STRUCT FIELDS*/
   micro_sock->sd = sock;
   micro_sock->state = CLOSED;
-  micro_sock->remote_host_addr = NULL;
-  micro_sock->remote_host_addr_size = 0;
+  micro_sock->peer_addr = NULL;
+  micro_sock->peer_addr_len = 0;
   micro_sock->init_win_size = MICROTCP_WIN_SIZE;
   micro_sock->curr_win_size = micro_sock->init_win_size;
   micro_sock->can_read = true;
-  micro_sock->can_write = tru
+  micro_sock->can_write = true;
 
   micro_sock->recvbuf = (uint8_t *) calloc(MICROTCP_RECVBUF_LEN, MICROTCP_MSS);
   if (micro_sock->recvbuf == NULL){
@@ -78,16 +78,12 @@ microtcp_sock_t microtcp_socket (int domain, int type, int protocol){
 }
 
 microtcp_packet_t*
-microtcp_make_pkt (microtcp_sock_t *socket, void* data, int data_len, int flags) {
+microtcp_make_pkt (microtcp_sock_t *socket, const char* data, int data_len, int flags) {
   int i;
   microtcp_packet_t* packet;
 
   /*ALLOCATE MEMORY*/
   packet = (microtcp_packet_t*) malloc(sizeof(microtcp_packet_t));
-
-  if (data_len > 0){
-    packet->data = malloc(data_len * sizeof(char));
-  }
   
   /*SET HEADER VARIABLES*/
   packet->header.ack_number = socket->ack_number;
@@ -103,7 +99,7 @@ microtcp_make_pkt (microtcp_sock_t *socket, void* data, int data_len, int flags)
     packet->data[i] = data[i];
   }
   
-  header.checksum = crc32(packet, HEADER_SIZE + data_len);
+  packet->header.checksum = crc32((void*)packet, HEADER_SIZE + data_len);
 
   return packet;
 }
@@ -112,7 +108,7 @@ int microtcp_test_checksum(microtcp_packet_t* packet) {
     int checksum = packet->header.checksum;
 
     packet->header.checksum = 0; 
-    if (crc32(packet, HEADER_SIZE + packet->header.data_len) != checksum)
+    if (crc32((void*)packet, HEADER_SIZE + packet->header.data_len) != checksum)
         return 0;
     else
         return 1;
@@ -133,8 +129,6 @@ microtcp_bind (microtcp_sock_t *socket, const struct sockaddr *address,
 
 void microtcp_close_socket(microtcp_sock_t* socket) {
     free(socket->recvbuf);
-    free(socket->remote_host_addr);
-    socket->remote_host_addr_size = 0;
     socket->bytes_lost = 0;
     socket->bytes_received = 0;
     socket->bytes_send = 0;
@@ -145,8 +139,8 @@ void microtcp_close_socket(microtcp_sock_t* socket) {
     socket->buf_fill_level = 0;
     socket->seq_number = rand();
     socket->ack_number = 0;
-    socket->cwnd = 0;
-    socket->ssthresh = 0;
+    socket->cwnd = MICROTCP_INIT_CWND;
+    socket->ssthresh = MICROTCP_INIT_SSTHRESH;
 }
 
 int
@@ -171,7 +165,7 @@ microtcp_connect (microtcp_sock_t *socket, const struct sockaddr *address,
   socket->seq_number += 1;
 
   /* wait to receive SYNACK response */
-  microtcp_header_t* synack_pck = malloc(HEADER_SIZE);
+  microtcp_packet_t* synack_pck = malloc(sizeof(microtcp_packet_t));
   
   /* get packet and verify it was both received correctly and 
     * has the expected contents */
@@ -185,7 +179,7 @@ microtcp_connect (microtcp_sock_t *socket, const struct sockaddr *address,
     LOG_ERROR("Received corrupted packet, will continue to wait.");
     socket->state = INVALID;
     return -1;
-  } else if ((synack_pck->control ^ (ACK | SYN)) != 0) {
+  } else if ((synack_pck->header.control ^ (ACK | SYN)) != 0) {
     LOG_ERROR("Packet didn't only have syn and ack flags, aborting.");
     socket->state = INVALID;
     return -1;
@@ -193,9 +187,9 @@ microtcp_connect (microtcp_sock_t *socket, const struct sockaddr *address,
 
   /* store the sequence number of the other host as our ACK number and 
     * add 1 to it */
-  socket->ack_number = synack_pck->seq_number + 1;
+  socket->ack_number = synack_pck->header.seq_number + 1;
   
-  /* crete final ack packet for handshake */
+  /* create final ack packet for handshake */
   microtcp_packet_t* final_pck = microtcp_make_pkt(socket, NULL, 0, ACK);
 
   /* increase our sequence number */
@@ -212,7 +206,7 @@ microtcp_connect (microtcp_sock_t *socket, const struct sockaddr *address,
   /* we have established connection!!! save the remote
     * host's address and return success */
   socket->peer_addr = address;
-  socket->peer_addr_ = address_len;
+  socket->peer_addr_len = address_len;
 
   /* also change the socket state accprdingly */
   socket->state = ESTABLISHED;
@@ -241,7 +235,7 @@ microtcp_accept (microtcp_sock_t *socket, struct sockaddr *address,
   LOG_INFO("Sent SYNACK packet, waiting for ACK");
 
   /*RECEIVE FINAL ACK*/
-  microtcp_header_t* ack_pack = malloc(HEADER_SIZE);
+  microtcp_packet_t* ack_pack = malloc(sizeof(microtcp_packet_t));
   
   if(recvfrom(socket->sd, ack_pack, HEADER_SIZE, 0, NULL, 0) == -1) {
     LOG_ERROR("Failed to receive ACK");
@@ -251,7 +245,7 @@ microtcp_accept (microtcp_sock_t *socket, struct sockaddr *address,
     LOG_ERROR("Received corrupted packet, aborting");
     socket->state = INVALID;
     return -1;
-  }else if((ack_pack->control ^ ACK) != 0) {
+  }else if((ack_pack->header.control ^ ACK) != 0) {
     LOG_ERROR("Unexpected header flags, aborting");
     socket->state = INVALID;
     return -1;
@@ -259,7 +253,7 @@ microtcp_accept (microtcp_sock_t *socket, struct sockaddr *address,
 
   /*UPDATE SEQUENCE NUMBERS*/
   socket->seq_number += 1;
-  socket->ack_number = ack_pack->seq_number + 1;
+  socket->ack_number = ack_pack->header.seq_number + 1;
 
   socket->state = ESTABLISHED;
   LOG_INFO("Connection has been established");
@@ -301,6 +295,8 @@ microtcp_shutdown (microtcp_sock_t *socket, int how)
 
       LOG_INFO("Successful transmission of FIN packet");
 
+      socket->state = FIN_WAIT_1;
+
       break;
 
     case 2: /*SHUT_RDWR: DISABLE RECEPTION AND TRANSMISSION*/
@@ -320,6 +316,8 @@ microtcp_shutdown (microtcp_sock_t *socket, int how)
       }
       
       LOG_INFO("Successful transmission of FIN packet");
+
+      socket->state = FIN_WAIT_1;
       
       break;
 
@@ -380,59 +378,41 @@ wait_for_packet:
     LOG_INFO("received packet");
 
     /* get the packet's header */
-    microtcp_header_t* header = data_in->header; 
-    
-    /* check if FIN flag is set, if not, ignore the packet */
-    if((header->control & FIN) != 0) {
-       LOG_INFO("Packet doesn't have FIN flag, ignoring for now...");
-       goto wait_for_packet;
+    microtcp_header_t header = data_in->header; 
+
+    if (socket->state == FIN_WAIT_1 &&
+            header.control == ACK) {
+        socket->state = CLOSING_BY_HOST;
+
+        goto wait_for_packet;
+    } else if (socket->state == CLOSING_BY_HOST &&
+            (header.control ^ FIN) == 0) {
+        socket->state = CLOSED;  
+        microtcp_close_socket(socket);
+        return 0;
+    } else if (socket->conn_role == SERVER &&
+            (header.control ^ FIN) == 0) {
+        socket->state = CLOSING_BY_PEER;
     }
     
-    /* otherwise send the ack */
+    /* send the ack */
     socket->ack_number += 1;
 
-    microtcp_packet_t* ack = microtcp_make_pkt(socket, NULL, 0, ACK); //why would you declare a ptr after a goto address?
-
-    while (sendto(socket->sd, ack, HEADER_SIZE, 0, socket->remote_host_addr, 
-                socket->remote_host_addr_size) == -1)
+    microtcp_packet_t* ack = microtcp_make_pkt(socket, NULL, 0, ACK);
+    
+    while (sendto(socket->sd, ack, HEADER_SIZE, 0, socket->peer_addr, 
+                socket->peer_addr_len) == -1)
     {
         LOG_ERROR("Failed to send ack, retrying");
     }
     free(ack);
 
-    /* set the socket state accordingly */
-    socket->state = CLOSING_BY_PEER;
-    
-    /* send FIN packet */
-    microtcp_packet_t* fin = microtcp_make_pkt(socket, NULL, 0, FIN | ACK); 
-
-    while(sendto(socket->sd, fin, HEADER_SIZE, 0, socket->remote_host_addr, 
-                socket->remote_host_addr_size) == -1)
-    {
-        LOG_WARN("Failed to send fin, retrying...");
+    if (socket->state == CLOSING_BY_PEER) {
+        microtcp_shutdown(socket, 2);
+        microtcp_close_socket(socket);
+        return 0;
+    } else {
+        goto wait_for_packet;
     }
-    free(fin);
-    
-    /* wait for ack */
-
-wait_for_fin_ack:
-    while(recvfrom(socket->sd, data_in, data_len,
-                0, NULL, 0) == -1) 
-    {
-        LOG_WARN("Failed to receive ack, continuing to wait.");
-        //is this ever going to end?
-    }
-    
-    /* get the header from the data */
-    header = (microtcp_header_t*)data_in;
-    
-    if((header->control & (FIN|ACK)) == 0) {
-        LOG_WARN("Received packet wasn't ack, continuing to wait...");
-        goto wait_for_fin_ack;
-    }
-
-    /* we got the ack! close the connection and deallocate all memory */
-    microtcp_close_socket(socket);
-    return 0;
 }
 

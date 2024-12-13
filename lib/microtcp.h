@@ -26,6 +26,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 
 /*
  * Several useful constants
@@ -57,6 +58,7 @@ typedef enum
   CLOSING_BY_PEER,
   CLOSING_BY_HOST,
   CLOSED,
+  FIN_WAIT_1,
   INVALID
 } mircotcp_state_t;
 
@@ -80,7 +82,7 @@ typedef struct
   size_t peer_addr_len; 
 
   bool can_read;
-  bool can write;
+  bool can_write;
   microtcp_connection_role conn_role;
 
 
