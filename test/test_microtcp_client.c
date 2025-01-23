@@ -18,13 +18,11 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-/*
- * You can use this file to write a test microTCP client.
- * This file is already inserted at the build system.
- */
+#include "../lib/microtcp.h"
+#include <sys/socket.h>
+#include <netinet/in.h>
 
 int
 main(int argc, char **argv)
 {
-
 }

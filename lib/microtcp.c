@@ -28,7 +28,7 @@
 #include <sys/socket.h>
 #include <poll.h>
 
-microtcp_sock_t microtcp_socket (int domain, int type, int protocol){
+microtcp_sock_t microtcp_socket(int domain, int type, int protocol){
 
   /*OPEN A SOCKET*/
   int sock;
@@ -48,7 +48,7 @@ microtcp_sock_t microtcp_socket (int domain, int type, int protocol){
   micro_sock->state = CLOSED;
   micro_sock->peer_addr = NULL;
   micro_sock->peer_addr_len = 0;
-  micro_sock->init_win_size = MICROTCP_WIN_SIZE;
+  micro_sock->init_win_size = 0; // 0 initial window size, will be set by the handshake
   micro_sock->curr_win_size = micro_sock->init_win_size;
   micro_sock->can_read = true;
   micro_sock->can_write = true;
@@ -149,6 +149,9 @@ microtcp_connect (microtcp_sock_t *socket, const struct sockaddr *address,
 {
   /* make a SYN packet and send it */
   microtcp_packet_t* syn_pack = microtcp_make_pkt(socket, NULL, 0, SYN);
+  
+  // set the window size
+  syn_pack->header.window = MICROTCP_WIN_SIZE;
 
   socket->conn_role = CLIENT;
   
@@ -212,18 +215,45 @@ microtcp_connect (microtcp_sock_t *socket, const struct sockaddr *address,
   socket->state = ESTABLISHED;
 
   return 0;
-}
+} // microtcp_connect
 
 int
 microtcp_accept (microtcp_sock_t *socket, struct sockaddr *address,
                  socklen_t address_len)
 {
-  int sent;
-  microtcp_packet_t* synack_pack = microtcp_make_pkt(socket, NULL, 0, (SYN|ACK));
+  microtcp_packet_t* syn_pck = malloc(sizeof(microtcp_packet_t));
+
+  if(recvfrom(socket->sd, syn_pck, HEADER_SIZE,
+              0, NULL, 0) == -1) {
+    LOG_ERROR("Failed to receive ACK packet.");
+    socket->state = INVALID;
+    return -1;
+  } else if (!microtcp_test_checksum(syn_pck)) {
+    LOG_ERROR("Received corrupted packet, aborting.");
+    socket->state = INVALID;
+    return -1;
+  } else if ((syn_pck->header.control ^ ACK) != 0) {
+    LOG_ERROR("Packet didn't only have ack flag, aborting.");
+    socket->state = INVALID;
+    return -1;
+  }
+
+  /* we've received the SYN packet, time to send our ACK packet, but first set our
+   * buffer size to the size indicated by the SYN packet 
+   * also set our ACK number to the packet's seq number*/
+  socket->init_win_size = syn_pck->header.window;
+  socket->ack_number = syn_pck->header.seq_number + 1;
+
 
   socket->conn_role = SERVER;
 
   /*SEND SYNACK*/
+  int sent;
+  microtcp_packet_t* synack_pack = microtcp_make_pkt(socket, NULL, 0, (SYN|ACK));
+
+  // transmit our buffer size
+  syn_pck->header.window = MICROTCP_WIN_SIZE;
+
   sent = sendto(socket->sd, synack_pack, HEADER_SIZE, 0, address, address_len);
 
   if(sent == -1){
@@ -259,7 +289,7 @@ microtcp_accept (microtcp_sock_t *socket, struct sockaddr *address,
   LOG_INFO("Connection has been established");
 
   return 0;
-}
+} // microtcp_accept
 
 int
 microtcp_shutdown (microtcp_sock_t *socket, int how)

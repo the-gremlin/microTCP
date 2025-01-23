@@ -8,3 +8,5 @@ apps/*.py
 .cproject
 .pyproject
 .pydevproject
+cmake*
+CMake*
