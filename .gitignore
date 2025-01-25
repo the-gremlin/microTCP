@@ -10,3 +10,4 @@ apps/*.py
 .pydevproject
 cmake*
 CMake*
+Makefile
