@@ -57,8 +57,6 @@ typedef enum
   ESTABLISHED,
   CLOSING_BY_PEER,
   CLOSING_BY_HOST,
-  CLOSED,
-  FIN_WAIT_1,
   INVALID
 } mircotcp_state_t;
 

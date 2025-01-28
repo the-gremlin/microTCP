@@ -128,7 +128,6 @@ microtcp_bind (microtcp_sock_t *socket, const struct sockaddr *address,
 }
 
 void microtcp_close_socket(microtcp_sock_t* socket) {
-    free(socket->recvbuf);
     socket->bytes_lost = 0;
     socket->bytes_received = 0;
     socket->bytes_send = 0;
@@ -292,8 +291,7 @@ microtcp_accept (microtcp_sock_t *socket, struct sockaddr *address,
 } // microtcp_accept
 
 int
-microtcp_shutdown (microtcp_sock_t *socket, int how)
-{
+microtcp_shutdown (microtcp_sock_t *socket, int how) {
   int sent;
   microtcp_packet_t* fin_pack;
 
@@ -304,12 +302,20 @@ microtcp_shutdown (microtcp_sock_t *socket, int how)
   
   switch (how){
     
-    case 0: /*SHUT_RD: DISABLE RECEPTION*/
+    case SHUT_RD: /*DISABLE RECEPTION*/
 
-      /* disable reads */
-      socket->can_read = false;
+      /* free receive buffer */
+      free(socket->recvbuf);
+      break;
 
-    case 1: /*SHUT_WR: DISABLE TRANSMISSION*/
+    case SHUT_WR: /*SIGNAL END OF TRANSMISSION AND DISABLE FURTHER SENDING*/
+
+      /* force only the client being able to initiate connection close */
+      
+      if (socket->conn_role == SERVER && socket->state != CLOSING_BY_PEER) {
+          LOG_ERROR("The server cannot initiate the shutdown of the connection!");
+          return -1;
+      }
 
       /* disable writes */
       socket->can_write = false;
@@ -323,37 +329,38 @@ microtcp_shutdown (microtcp_sock_t *socket, int how)
         return -1;
       }
 
-      LOG_INFO("Successful transmission of FIN packet");
+      LOG_INFO("Send FIN, waiting for ACK");
 
-      socket->state = FIN_WAIT_1;
+      microtcp_packet_t* syn_pck = malloc(sizeof(microtcp_packet_t));
+
+      // not very elegant, just throws out all packets until it receives and ACK
+      int res = 0;
+      do {
+        res = recvfrom(socket->sd, syn_pck, HEADER_SIZE,0, NULL, 0);
+      } while (res == -1 || 
+                !microtcp_test_checksum(syn_pck) ||
+                (syn_pck->header.control ^ ACK) == 0);
+
+      // we've received the ACK, change socket state
+      socket->state = CLOSING_BY_HOST;
 
       break;
+    case SHUT_RDWR: /*DISABLE RECEPTION AND TRANSMISSION*/
+      // this is basically a shorthand for doing SHUT_WR and SHUT_RD immeadiately one after the other,
+      // basically only in case we don't want to wait for any incoming data from the other host and want
+      // to close our part of the connection immediatelly.
+      // The shutdown still has to be initiated by the client
 
-    case 2: /*SHUT_RDWR: DISABLE RECEPTION AND TRANSMISSION*/
-
-      /* disable reads and writes */
-      socket->can_read = false;
-      socket->can_write = false;
-
-      /*SEND A FIN PACKET*/
-      fin_pack = microtcp_make_pkt(socket, NULL, 0, FIN);
-      sent = sendto(socket->sd, fin_pack, HEADER_SIZE, 0, 
-                  socket->peer_addr, socket->peer_addr_len);
-
-      if(sent == -1){
-        LOG_ERROR("Failed to send FIN packet");
-        return -1;
+      if (socket->conn_role == SERVER && socket->state != CLOSING_BY_PEER) {
+          LOG_ERROR("The server cannot initiate the shutdown of the connection!");
+          return -1;
       }
-      
-      LOG_INFO("Successful transmission of FIN packet");
 
-      socket->state = FIN_WAIT_1;
-      
       break;
 
     default: /*INVALID HOW VALUE*/
-      LOG_ERROR("Invalid value specified in how");
-      return -1;
+     LOG_ERROR("Invalid value given for `how`");
+     return -1;
   }
 
   return 0;       
@@ -363,16 +370,17 @@ ssize_t
 microtcp_send (microtcp_sock_t *socket, const void *buffer, size_t length,
                int flags)
 {
-  /* Your code here */
+  if (!socket->can_write) {
+      LOG_ERROR("Writing has been disabled for this socket, either close it or initiate a new connection");
+      return -1;
+    }
 }
-
-
 
 ssize_t
 microtcp_recv (microtcp_sock_t *socket, void *buffer, size_t length, int flags)
 {
     if (socket->can_read == false) {
-      LOG_ERROR("Connection is closed, cannot read");
+      LOG_ERROR("Reading has been disabled for this socket, either close it or initiate a new connection");
       return -1;
     }
 
@@ -401,8 +409,8 @@ wait_for_packet:
         return -1;
     } else if (!microtcp_test_checksum(data_in)) {
         /* test checksum */
-        LOG_WARN("Packet checksum failed, continuing to wait for valid packets");
-        goto wait_for_packet;
+       LOG_WARN("Packet checksum failed, continuing to wait for valid packets");
+       goto wait_for_packet;
     }
 
     LOG_INFO("received packet");
@@ -410,21 +418,14 @@ wait_for_packet:
     /* get the packet's header */
     microtcp_header_t header = data_in->header; 
 
-    if (socket->state == FIN_WAIT_1 &&
-            header.control == ACK) {
-        socket->state = CLOSING_BY_HOST;
-
-        goto wait_for_packet;
-    } else if (socket->state == CLOSING_BY_HOST &&
+    // for now we only care if we're the server and we get a FIN packet
+    if (socket->conn_role == SERVER && 
             (header.control ^ FIN) == 0) {
-        socket->state = CLOSED;  
-        microtcp_close_socket(socket);
-        return 0;
-    } else if (socket->conn_role == SERVER &&
-            (header.control ^ FIN) == 0) {
-        socket->state = CLOSING_BY_PEER;
+        
+       socket->state = CLOSING_BY_PEER;
+       return -1;
     }
-    
+
     /* send the ack */
     socket->ack_number += 1;
 
@@ -433,16 +434,10 @@ wait_for_packet:
     while (sendto(socket->sd, ack, HEADER_SIZE, 0, socket->peer_addr, 
                 socket->peer_addr_len) == -1)
     {
-        LOG_ERROR("Failed to send ack, retrying");
+       LOG_ERROR("Failed to send ack, retrying");
     }
     free(ack);
-
-    if (socket->state == CLOSING_BY_PEER) {
-        microtcp_shutdown(socket, 2);
-        microtcp_close_socket(socket);
-        return 0;
-    } else {
-        goto wait_for_packet;
-    }
+    
+    goto wait_for_packet;
 }
 
