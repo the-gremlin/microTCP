@@ -28,6 +28,11 @@ else ()
 	set (CMAKE_CXX_STANDARD 11)
 endif()
 
+# allow us to have debug messages
+if (CMAKE_BUILD_TYPE EQUAL "DEBUG")
+    add_definitions(-DENABLE_DEBUG_MSG=1)
+endif (CMAKE_BUILD_TYPE EQUAL "DEBUG")
+
 # Enable all warnings during compilation, hoping that this will be 
 # helpful for the students :)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wextra")
