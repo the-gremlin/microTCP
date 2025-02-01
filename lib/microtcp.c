@@ -21,6 +21,7 @@
 #include "microtcp.h"
 #include <stdbool.h>
 #include "../utils/crc32.h"
+#include <string.h>
 #include <time.h>
 #include <stdlib.h>
 #include "../utils/log.h"
@@ -225,6 +226,7 @@ microtcp_accept (microtcp_sock_t *socket, struct sockaddr *address,
   if(recvfrom(socket->sd, syn_pck, HEADER_SIZE,
               0, NULL, 0) == -1) {
     LOG_ERROR("Failed to receive ACK packet.");
+    perror("uh-oh");
     socket->state = INVALID;
     return -1;
   } else if (!microtcp_test_checksum(syn_pck)) {
@@ -355,6 +357,9 @@ microtcp_shutdown (microtcp_sock_t *socket, int how) {
           LOG_ERROR("The server cannot initiate the shutdown of the connection!");
           return -1;
       }
+
+      microtcp_shutdown(socket, SHUT_WR);
+      microtcp_shutdown(socket, SHUT_RD);
 
       break;
 

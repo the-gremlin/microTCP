@@ -21,8 +21,31 @@
 #include "../lib/microtcp.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <sys/types.h>
+#include <arpa/inet.h>
 
 int
 main(int argc, char **argv)
 {
+
+    microtcp_sock_t s = microtcp_socket(AF_INET, SOCK_STREAM, 0);
+
+    struct sockaddr_in local;
+
+    local.sin_addr.s_addr = inet_addr("127.0.0.1");
+    local.sin_port = 5505;
+    local.sin_family = AF_INET;
+
+    microtcp_bind(&s, (struct sockaddr *) &local, sizeof(local));
+
+
+    struct sockaddr_in remote;
+
+    remote.sin_addr.s_addr = inet_addr("127.0.0.1");
+    remote.sin_port = 6505;
+    remote.sin_family = AF_INET;
+
+    microtcp_connect(&s, (struct sockaddr*) &remote, sizeof(remote));
+
+    microtcp_shutdown(&s, SHUT_RDWR);    
 }
