@@ -33,7 +33,7 @@ microtcp_sock_t microtcp_socket(int domain, int type, int protocol){
 
   /*OPEN A SOCKET*/
   int sock;
-  if((sock = socket(domain, type, protocol)) == -1){
+  if((sock = socket(domain, SOCK_DGRAM, protocol)) == -1){
     LOG_ERROR("SOCKET COULD NOT BE OPENED");
     exit(EXIT_FAILURE);
   }
@@ -95,6 +95,8 @@ microtcp_make_pkt (microtcp_sock_t *socket, const char* data, int data_len, int 
   packet->header.future_use0 = 0;
   packet->header.future_use1 = 0;
   packet->header.future_use2 = 0;
+  // set checksum to 0 for calculation
+  packet->header.checksum = 0;
 
   for (i = 0; i < data_len; i++){
     packet->data[i] = data[i];
@@ -106,7 +108,7 @@ microtcp_make_pkt (microtcp_sock_t *socket, const char* data, int data_len, int 
 }
 
 int microtcp_test_checksum(microtcp_packet_t* packet) {
-    int checksum = packet->header.checksum;
+    uint32_t checksum = packet->header.checksum;
 
     packet->header.checksum = 0; 
     if (crc32((void*)packet, HEADER_SIZE + packet->header.data_len) != checksum)
@@ -152,6 +154,10 @@ microtcp_connect (microtcp_sock_t *socket, const struct sockaddr *address,
   
   // set the window size
   syn_pack->header.window = MICROTCP_WIN_SIZE;
+
+  /* we have to recalculate the checksum after setting the window size because */
+  syn_pack->header.checksum = 0;
+  syn_pack->header.checksum = crc32((void*)syn_pack, HEADER_SIZE + 0);
 
   socket->conn_role = CLIENT;
   
@@ -224,7 +230,7 @@ microtcp_accept (microtcp_sock_t *socket, struct sockaddr *address,
   microtcp_packet_t* syn_pck = malloc(sizeof(microtcp_packet_t));
 
   if(recvfrom(socket->sd, syn_pck, HEADER_SIZE,
-              0, NULL, 0) == -1) {
+              0, address, &address_len) == -1) {
     LOG_ERROR("Failed to receive ACK packet.");
     perror("uh-oh");
     socket->state = INVALID;
@@ -233,8 +239,8 @@ microtcp_accept (microtcp_sock_t *socket, struct sockaddr *address,
     LOG_ERROR("Received corrupted packet, aborting.");
     socket->state = INVALID;
     return -1;
-  } else if ((syn_pck->header.control ^ ACK) != 0) {
-    LOG_ERROR("Packet didn't only have ack flag, aborting.");
+  } else if ((syn_pck->header.control ^ SYN) != 0) {
+    LOG_ERROR("Packet didn't only have SYN flag, aborting.");
     socket->state = INVALID;
     return -1;
   }
@@ -245,6 +251,10 @@ microtcp_accept (microtcp_sock_t *socket, struct sockaddr *address,
   socket->init_win_size = syn_pck->header.window;
   socket->ack_number = syn_pck->header.seq_number + 1;
 
+  /* also write down the other hosts's address */
+  socket->peer_addr = address;
+  socket->peer_addr_len = address_len;
+
 
   socket->conn_role = SERVER;
 
@@ -252,8 +262,10 @@ microtcp_accept (microtcp_sock_t *socket, struct sockaddr *address,
   int sent;
   microtcp_packet_t* synack_pack = microtcp_make_pkt(socket, NULL, 0, (SYN|ACK));
 
-  // transmit our buffer size
+  // transmit our buffer size + recalculate checksum
   syn_pck->header.window = MICROTCP_WIN_SIZE;
+  syn_pck->header.checksum = 0;
+  syn_pck->header.checksum = crc32((void*)syn_pck, HEADER_SIZE + 0);
 
   sent = sendto(socket->sd, synack_pack, HEADER_SIZE, 0, address, address_len);
 
@@ -268,12 +280,13 @@ microtcp_accept (microtcp_sock_t *socket, struct sockaddr *address,
   /*RECEIVE FINAL ACK*/
   microtcp_packet_t* ack_pack = malloc(sizeof(microtcp_packet_t));
   
+  // we don't put the address in this recvfrom call because we already know it, hopefully 
   if(recvfrom(socket->sd, ack_pack, HEADER_SIZE, 0, NULL, 0) == -1) {
-    LOG_ERROR("Failed to receive ACK");
+    LOG_ERROR("Failed to receive final ACK");
     socket->state = INVALID;
     return -1;
   }else if(!microtcp_test_checksum(ack_pack)) {
-    LOG_ERROR("Received corrupted packet, aborting");
+    LOG_ERROR("Received corrupted packet for final ACK, aborting");
     socket->state = INVALID;
     return -1;
   }else if((ack_pack->header.control ^ ACK) != 0) {
@@ -391,7 +404,8 @@ microtcp_recv (microtcp_sock_t *socket, void *buffer, size_t length, int flags)
 
     /* polling code taken from Beej's Guide to Network Programming */
     struct pollfd events[1];
-    microtcp_packet_t* data_in = malloc(sizeof(char) * MICROTCP_MSS);
+    /* george is an idiot that forgot the header needs space in memory as well */
+    microtcp_packet_t* data_in = malloc(sizeof(char) * (MICROTCP_MSS + sizeof(microtcp_header_t)));
     int data_len = sizeof(char) * MICROTCP_MSS;
 
     events[0].fd = socket->sd;
