@@ -27,6 +27,7 @@
 #include <netinet/in.h>
 #include <sys/types.h>
 #include <arpa/inet.h>
+#include <unistd.h>
 
 int
 main(int argc, char **argv)
@@ -50,6 +51,8 @@ main(int argc, char **argv)
     microtcp_accept(&s, (struct sockaddr*)&remote, len);    
 
     int res = microtcp_recv(&s, NULL, 0, 0);
+
+    sleep(1);
 
     if (res == -1) {
         microtcp_shutdown(&s, SHUT_RDWR);

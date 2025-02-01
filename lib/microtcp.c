@@ -310,8 +310,8 @@ microtcp_shutdown (microtcp_sock_t *socket, int how) {
   int sent;
   microtcp_packet_t* fin_pack;
 
-  if (socket->conn_role == SERVER) {
-    LOG_ERROR("The server cannot shut down the connection.");
+  if (socket->conn_role == SERVER && socket->state != CLOSING_BY_PEER) {
+    LOG_ERROR("The server cannot initiate the shutdown of the connection");
     return -1;
   }
   
@@ -372,6 +372,26 @@ microtcp_shutdown (microtcp_sock_t *socket, int how) {
       }
 
       microtcp_shutdown(socket, SHUT_WR);
+        
+      if (socket->conn_role == CLIENT) {
+          // blindly receive until FIN and send ACK
+          microtcp_packet_t *tmp = malloc(sizeof(microtcp_packet_t));
+          do {
+             res = recvfrom(socket->sd, tmp, sizeof(microtcp_packet_t),0, NULL, 0);
+
+          } while (res != -1 &&
+                    (tmp->header.control ^ FIN) == 0);
+
+          microtcp_packet_t* ack = microtcp_make_pkt(socket, NULL, 0, ACK);
+          
+          while (sendto(socket->sd, ack, HEADER_SIZE, 0, socket->peer_addr, 
+                      socket->peer_addr_len) == -1)
+          {
+             LOG_ERROR("Failed to send ack, retrying");
+          }
+          free(ack);
+      }
+
       microtcp_shutdown(socket, SHUT_RD);
 
       break;
@@ -416,7 +436,6 @@ microtcp_recv (microtcp_sock_t *socket, void *buffer, size_t length, int flags)
 
 wait_for_packet:
     poll(events, 1, -1); // -1 means it will wait until an event happens;
-    
     LOG_INFO("Received a message, reading packet now!");
     
     /* get the data */
@@ -437,14 +456,6 @@ wait_for_packet:
     /* get the packet's header */
     microtcp_header_t header = data_in->header; 
 
-    // for now we only care if we're the server and we get a FIN packet
-    if (socket->conn_role == SERVER && 
-            (header.control ^ FIN) == 0) {
-        
-       socket->state = CLOSING_BY_PEER;
-       return -1;
-    }
-
     /* send the ack */
     socket->ack_number += 1;
 
@@ -456,6 +467,13 @@ wait_for_packet:
        LOG_ERROR("Failed to send ack, retrying");
     }
     free(ack);
+
+    if ((header.control ^ FIN) == 0) {
+        if (socket->conn_role == SERVER)
+            socket->state = CLOSING_BY_PEER;
+
+        return -1;
+    }
     
     goto wait_for_packet;
 }
