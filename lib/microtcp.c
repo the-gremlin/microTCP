@@ -354,7 +354,7 @@ microtcp_shutdown (microtcp_sock_t *socket, int how) {
         res = recvfrom(socket->sd, syn_pck, HEADER_SIZE,0, NULL, 0);
       } while (res == -1 || 
                 !microtcp_test_checksum(syn_pck) ||
-                (syn_pck->header.control ^ ACK) == 0);
+                (syn_pck->header.control ^ ACK) != 0);
 
       // we've received the ACK, change socket state
       socket->state = CLOSING_BY_HOST;
@@ -375,12 +375,13 @@ microtcp_shutdown (microtcp_sock_t *socket, int how) {
         
       if (socket->conn_role == CLIENT) {
           // blindly receive until FIN and send ACK
+          LOG_INFO("client waiting for FIN");
           microtcp_packet_t *tmp = malloc(sizeof(microtcp_packet_t));
           do {
              res = recvfrom(socket->sd, tmp, sizeof(microtcp_packet_t),0, NULL, 0);
 
           } while (res != -1 &&
-                    (tmp->header.control ^ FIN) == 0);
+                    (tmp->header.control ^ FIN) != 0);
 
           microtcp_packet_t* ack = microtcp_make_pkt(socket, NULL, 0, ACK);
           
