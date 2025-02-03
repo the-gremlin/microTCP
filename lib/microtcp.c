@@ -310,11 +310,6 @@ microtcp_shutdown (microtcp_sock_t *socket, int how) {
   int sent;
   microtcp_packet_t* fin_pack;
 
-  if (socket->conn_role == SERVER && socket->state != CLOSING_BY_PEER) {
-    LOG_ERROR("The server cannot initiate the shutdown of the connection");
-    return -1;
-  }
-  
   switch (how){
     
     case SHUT_RD: /*DISABLE RECEPTION*/
@@ -470,8 +465,10 @@ wait_for_packet:
     free(ack);
 
     if ((header.control ^ FIN) == 0) {
-        if (socket->conn_role == SERVER)
+        if (socket->conn_role == SERVER) {
+            LOG_INFO("server received a FIN, changing connection state");
             socket->state = CLOSING_BY_PEER;
+        }
 
         return -1;
     }
