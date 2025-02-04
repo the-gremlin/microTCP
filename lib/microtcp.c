@@ -91,7 +91,7 @@ microtcp_make_pkt (microtcp_sock_t *socket, const char* data, int data_len, int 
   packet->header.seq_number = socket->seq_number;
   packet->header.data_len = data_len;
   packet->header.control = flags;
-  packet->header.window = socket->buf_fill_level;
+  packet->header.window = socket->curr_win_size;
   packet->header.future_use0 = 0;
   packet->header.future_use1 = 0;
   packet->header.future_use2 = 0;
@@ -418,55 +418,78 @@ microtcp_recv (microtcp_sock_t *socket, void *buffer, size_t length, int flags)
       return -1;
     }
 
-    /* polling code taken from Beej's Guide to Network Programming */
-    struct pollfd events[1];
-    /* george is an idiot that forgot the header needs space in memory as well */
+    /* ALLOCATE MEMORY FOR HEADER */
     microtcp_packet_t* data_in = malloc(sizeof(char) * (MICROTCP_MSS + sizeof(microtcp_header_t)));
     int data_len = sizeof(char) * MICROTCP_MSS;
 
-    events[0].fd = socket->sd;
-    events[0].events = POLLIN;
-
-
-    LOG_INFO("Waiting for incoming messages with poll();");
 
 wait_for_packet:
-    poll(events, 1, -1); // -1 means it will wait until an event happens;
-    LOG_INFO("Received a message, reading packet now!");
-    
-    /* get the data */
+
+    /* RECEIVE PACKET */
     if(recvfrom(socket->sd, data_in, data_len,
                 0, NULL, 0) == -1) 
     {
-        LOG_ERROR("Reading incoming data from socket failed, aborting.");
-        socket->state = INVALID;
-        return -1;
-    } else if (!microtcp_test_checksum(data_in)) {
+        LOG_ERROR("Reading incoming data from socket failed");
+
+        microtcp_packet_t* ack = microtcp_make_pkt(socket, NULL, 0, ACK);
+        
+        /*DUPLICATE ACK*/
+        sendto(socket->sd, ack, HEADER_SIZE, 0, socket->peer_addr, socket->peer_addr_len);
+
+        free(ack);
+        goto wait_for_packet;
+
+    }else if (!microtcp_test_checksum(data_in)) {
         /* test checksum */
        LOG_WARN("Packet checksum failed, continuing to wait for valid packets");
+
+       microtcp_packet_t* ack = microtcp_make_pkt(socket, NULL, 0, ACK);
+        
+        /*DUPLICATE ACK*/
+        sendto(socket->sd, ack, HEADER_SIZE, 0, socket->peer_addr, socket->peer_addr_len);
+
+        free(ack);
+
        goto wait_for_packet;
     }
 
-    LOG_INFO("received packet");
+    LOG_INFO("received packet"); /*AT THIS POINT, WE HAVE RECEIVED A CORRECT PACKET*/
 
     /* get the packet's header */
     microtcp_header_t header = data_in->header; 
 
-    /* send the ack */
-    socket->ack_number += 1;
+    //check the sequence number bc it might be farther ahead
+    if(header.seq_number == socket->ack_number){
+      /* send the ack */
+      socket->ack_number += header.data_len;
 
-    microtcp_packet_t* ack = microtcp_make_pkt(socket, NULL, 0, ACK);
-    
-    while (sendto(socket->sd, ack, HEADER_SIZE, 0, socket->peer_addr, 
-                socket->peer_addr_len) == -1)
-    {
-       LOG_ERROR("Failed to send ack, retrying");
+      microtcp_packet_t* ack = microtcp_make_pkt(socket, NULL, 0, ACK);
+      
+      /*WE DON'T ENSURE ITS ARRIVAL HERE, ONLY RESEND IT IF SMTH GOES WRONG AND IT DOESN'T ARRIVE*/
+      sendto(socket->sd, ack, HEADER_SIZE, 0, socket->peer_addr, socket->peer_addr_len);
+
+      free(ack);
+    }else{
+        microtcp_packet_t* ack = microtcp_make_pkt(socket, NULL, 0, ACK);
+        
+        /*DUPLICATE ACK*/
+        sendto(socket->sd, ack, HEADER_SIZE, 0, socket->peer_addr, socket->peer_addr_len);
+
+        /*if there's a gap in seq nums, save the packet for later*/
+        if(header.seq_number > socket->ack_number){
+          if(socket->curr_win_size > 0){
+            memcpy(socket->recvbuf + socket->buf_fill_level, data_in, data_len);
+          }
+        }
+
+        free(ack);
+
+       goto wait_for_packet;
     }
-    free(ack);
 
     if ((header.control ^ FIN) == 0) {
         if (socket->conn_role == SERVER) {
-            LOG_INFO("server received a FIN, changing connection state");
+            LOG_INFO("Server received a FIN, changing connection state");
             socket->state = CLOSING_BY_PEER;
         }
 
