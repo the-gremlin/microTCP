@@ -19,6 +19,8 @@
  */
 
 #include "microtcp.h"
+#include <asm-generic/socket.h>
+#include <bits/types/struct_timeval.h>
 #include <stdbool.h>
 #include "../utils/crc32.h"
 #include <string.h>
@@ -346,6 +348,8 @@ microtcp_shutdown (microtcp_sock_t *socket, int how) {
       // not very elegant, just throws out all packets until it receives and ACK
       int res = 0;
       do {
+          // increase sequence number by the size of the packets
+          // // increase sequence number by the size of the packets
         res = recvfrom(socket->sd, syn_pck, HEADER_SIZE,0, NULL, 0);
       } while (res == -1 || 
                 !microtcp_test_checksum(syn_pck) ||
@@ -400,14 +404,119 @@ microtcp_shutdown (microtcp_sock_t *socket, int how) {
   return 0;       
 }
 
+size_t min (size_t a, size_t b, size_t c) {
+    size_t tmp = (a < b) ? a : b;
+
+    return (tmp < c) ? tmp : c;
+}
+
 ssize_t
 microtcp_send (microtcp_sock_t *socket, const void *buffer, size_t length,
+        // increase sequence number by the size of the packets
                int flags)
 {
   if (!socket->can_write) {
       LOG_ERROR("Writing has been disabled for this socket, either close it or initiate a new connection");
       return -1;
     }
+
+  // set timeout for recvfrom
+  struct timeval timeout = {0, MICROTCP_ACK_TIMEOUT_US};
+
+  if (setsockopt(socket->sd, SOL_SOCKET, SO_RCVTIMEO, 
+              &timeout, sizeof(struct timeval)) == -1) {
+      perror(" Error setting timeout ");
+  }
+
+  size_t starting_sq = socket->seq_number;  // used for calculating which part to
+                                            // retransmit
+
+  void* data_start = (void*)buffer;         // used to point at the start of the segment
+                                            // of data we will send this "round"
+  size_t remaining_bytes = length;
+  size_t data_sent = 0;                     // how many bytes we have sent so far
+  size_t bytes_to_send;                     
+  int chunks;
+
+  while (data_sent < length) {
+      bytes_to_send = length; // no flow or congestion control for now so we just vibe
+      chunks = bytes_to_send / MICROTCP_MSS;
+
+      for (int i = 0; i < chunks; i++) {
+          // get the slice of data we will transmit from the buffer
+          void* data_chunk = malloc(MICROTCP_MSS);
+          memcpy(data_chunk, data_start + (MICROTCP_MSS * i), MICROTCP_MSS);
+
+          microtcp_packet_t* to_send = microtcp_make_pkt(socket, 
+                  data_chunk, MICROTCP_MSS, 0);
+
+          // increase sequence number by the size of the packets
+          socket->seq_number += MICROTCP_MSS;
+
+          sendto(socket->sd, to_send, HEADER_SIZE + MICROTCP_MSS, 0,
+                  socket->peer_addr, socket->peer_addr_len);
+      }
+        
+      // if we have any leftover bytes to send send them on their own
+      if ((bytes_to_send % MICROTCP_MSS)!= 0) {
+          int leftover_size = bytes_to_send - (chunks * MICROTCP_MSS);
+
+          void* data_chunk = malloc(leftover_size);
+          memcpy(data_chunk, data_start + (chunks * MICROTCP_MSS), leftover_size);
+
+          microtcp_packet_t* to_send = microtcp_make_pkt(socket, 
+                  data_chunk, leftover_size, 0);
+
+          // increase sequence number by the size of the packets
+          socket->seq_number += leftover_size;
+
+          sendto(socket->sd, to_send, HEADER_SIZE + leftover_size, 0,
+                  socket->peer_addr, socket->peer_addr_len);
+
+          chunks += 1;
+      }
+
+      // we have sent all of our data, time to wait for the ACKs
+      int num_dup_acks = 0;
+      size_t last_ack_recvd = socket->seq_number; // just to ensure no accidental
+                                                  // duplcate ACKs
+
+      for (int i = 0; i < chunks; i++) {
+          microtcp_packet_t* recvd = malloc(HEADER_SIZE);
+
+          int res = recvfrom(socket->sd, recvd, HEADER_SIZE, 
+                  0, NULL, NULL);
+
+          if (recvd->header.ack_number == last_ack_recvd) {
+              num_dup_acks += 1;
+          }
+
+          last_ack_recvd = recvd->header.ack_number;
+
+
+          
+
+          // the data has been received sucessfully, move the data pointer forward
+          if (i + 1 < chunks) {
+              // we know that the chunks before the last must have a size
+              // of MICROTCP_MSS
+              data_start += MICROTCP_MSS;
+          } else if (i + 1 == chunks) {
+              // for the last chunk, this ensures that the pointer will be 
+              // incremented the correct amount whether the chunk has a length
+              // of MICROTCP_MSS or the remainder 
+              data_start += bytes_to_send - (i * MICROTCP_MSS);
+          }
+      }
+
+      // everything was sent sucessfully, decrease the total remaining data and 
+      // go agane
+      remaining_bytes -= bytes_to_send;
+      data_sent += bytes_to_send;
+  }
+
+
+  
 }
 
 ssize_t
@@ -424,6 +533,7 @@ microtcp_recv (microtcp_sock_t *socket, void *buffer, size_t length, int flags)
 
 
 wait_for_packet:
+
 
     /* RECEIVE PACKET */
     if(recvfrom(socket->sd, data_in, data_len,
