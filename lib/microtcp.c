@@ -429,7 +429,7 @@ wait_for_packet:
     if(recvfrom(socket->sd, data_in, data_len,
                 0, NULL, 0) == -1) 
     {
-        LOG_ERROR("Reading incoming data from socket failed");
+        LOG_ERROR("Reading incoming data from socket failed, sending a duplicate ACK");
 
         microtcp_packet_t* ack = microtcp_make_pkt(socket, NULL, 0, ACK);
         
@@ -441,7 +441,7 @@ wait_for_packet:
 
     }else if (!microtcp_test_checksum(data_in)) {
         /* test checksum */
-       LOG_WARN("Packet checksum failed, continuing to wait for valid packets");
+       LOG_WARN("Packet checksum failed, sending a duplicate ACK");
 
        microtcp_packet_t* ack = microtcp_make_pkt(socket, NULL, 0, ACK);
         
@@ -453,12 +453,12 @@ wait_for_packet:
        goto wait_for_packet;
     }
 
-    LOG_INFO("received packet"); /*AT THIS POINT, WE HAVE RECEIVED A CORRECT PACKET*/
+    LOG_INFO("received packet"); /*AT THIS POINT, WE HAVE RECEIVED A PACKET WITHOUT ERRORS*/
 
     /* get the packet's header */
     microtcp_header_t header = data_in->header; 
 
-    //check the sequence number bc it might be farther ahead
+    /*CHECK THE SEQUENCE NUMBER TO MAKE SURE WE GOT WHAT WE WERE WAITING FOR*/
     if(header.seq_number == socket->ack_number){
       /* send the ack */
       socket->ack_number += header.data_len;
@@ -467,6 +467,8 @@ wait_for_packet:
       
       /*WE DON'T ENSURE ITS ARRIVAL HERE, ONLY RESEND IT IF SMTH GOES WRONG AND IT DOESN'T ARRIVE*/
       sendto(socket->sd, ack, HEADER_SIZE, 0, socket->peer_addr, socket->peer_addr_len);
+
+      //THIS IS WHERE I AM GOING TO EMPTY OUT SOME SLOTS IN THE BUFFER BUT IDK HOW!!!!!!!!!!!
 
       free(ack);
     }else{
@@ -479,6 +481,8 @@ wait_for_packet:
         if(header.seq_number > socket->ack_number){
           if(socket->curr_win_size > 0){
             memcpy(socket->recvbuf + socket->buf_fill_level, data_in, data_len);
+            socket->buf_fill_level++;
+            socket->curr_win_size--;
           }
         }
 
